@@ -652,7 +652,7 @@ int UpdateVoltageFromBqMaximo()
 	Result = I2CReadBlockWithCRC(BQMAXIMO, \
 			VC1_HI_BYTE, \
 			&(Registers.VCell1.VCell1Byte.VC1_HI), \
-			30);
+			18); // 9 cells x 2 bytes = 18 bytes 
 
 	pRawADCData = &Registers.VCell1.VCell1Byte.VC1_HI;
 	for (i = 0; i < 15; i++)
