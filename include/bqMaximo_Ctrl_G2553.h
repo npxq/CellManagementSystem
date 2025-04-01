@@ -49,17 +49,18 @@
 
 #define DELAY_LIMIT 0xffff
 
-#define SYS_STAT 0
-#define CELLBAL1 1
-#define CELLBAL2 2
-#define CELLBAL3 3
-#define SYS_CTRL1 4
-#define SYS_CTRL2 5
+#define SYS_STAT 0x00
+#define CELLBAL1 0x01
+#define CELLBAL2 0x02
+#define CELLBAL3 0x03
+#define SYS_CTRL1 0x04
+#define SYS_CTRL2 0x05
 #define PROTECT1 0x06
 #define PROTECT2 0x07
 #define PROTECT3 0x08
 #define OV_TRIP 0x09
 #define UV_TRIP 0x0A
+#define CC_CFG 0x0B
 #define VC1_HI_BYTE 0x0C
 
 #define ADCGAIN1 0x50
@@ -152,6 +153,7 @@ typedef struct _Register_Group
 		unsigned char StatusByte;
 	}SysStatus;
 
+	// Enable/Disable Cell Balancing (1=enable,0=disable)
 	union
 	{
 		struct

@@ -40,6 +40,7 @@
 #include <msp430.h> 
 #include <stdbool.h>
 #include <bqMaximo_Ctrl_G2553.h>
+#include <system_settings.h>
 #include <math.h>
 #include <float.h>
 #include <stdlib.h>
@@ -597,20 +598,34 @@ int GetADCGainOffset()
 	return result;
 }
 
+int BqIsAlert(void)
+{
+    if((P1IN&BIT0) == BIT0)
+    {
+        return 1;
+    }
+
+	return 0;
+}
+
 int ConfigureBqMaximo()
 {
 	int result = 0;
-	unsigned char bqMaximoProtectionConfig[5];
+	unsigned char bqMaximoProtectionConfig[7];
 
-	result = I2CWriteBlockWithCRC(BQMAXIMO, PROTECT1, &(Registers.Protect1.Protect1Byte), 5);
+	result = I2CWriteBlockWithCRC(BQMAXIMO, CELLBAL1, &(Registers.CellBal1.CellBal1Byte), 2);
 
-	result = I2CReadBlockWithCRC(BQMAXIMO, PROTECT1, bqMaximoProtectionConfig, 5);
+	result = I2CWriteBlockWithCRC(BQMAXIMO, SYS_CTRL1, &(Registers.SysCtrl1.SysCtrl1Byte), 7);
 
-	if(bqMaximoProtectionConfig[0] != Registers.Protect1.Protect1Byte
-			|| bqMaximoProtectionConfig[1] != Registers.Protect2.Protect2Byte
-			|| bqMaximoProtectionConfig[2] != Registers.Protect3.Protect3Byte
-			|| bqMaximoProtectionConfig[3] != Registers.OVTrip
-			|| bqMaximoProtectionConfig[4] != Registers.UVTrip)
+	result = I2CReadBlockWithCRC(BQMAXIMO, SYS_CTRL1, bqMaximoProtectionConfig, 7);
+
+	if(bqMaximoProtectionConfig[0] != Registers.SysCtrl1.SysCtrl1Byte
+			|| bqMaximoProtectionConfig[1] != Registers.SysCtrl2.SysCtrl2Byte
+			|| bqMaximoProtectionConfig[2] != Registers.Protect1.Protect1Byte
+			|| bqMaximoProtectionConfig[3] != Registers.Protect2.Protect2Byte
+			|| bqMaximoProtectionConfig[4] != Registers.Protect3.Protect3Byte
+			|| bqMaximoProtectionConfig[5] != Registers.OVTrip
+			|| bqMaximoProtectionConfig[6] != Registers.UVTrip)
 	{
 		result = -1;
 	}
@@ -620,7 +635,33 @@ int ConfigureBqMaximo()
 
 int InitialisebqMaximo()
 {
-	int result = 0;
+	int result = 0, count = 0;
+	//From TIDA-00449 drv_bq76930.c BqInitialisebqMaximo()
+	//BQ76930 need 400ms from SHIP-to-NORMAL transition to first read operation, datasheet, page 21.
+    //ALERT will be set in approx. 990ms after SHIP-to-NORMAL transition.
+    //Stay here for the alert to be set.
+    while(1)
+    {
+        delay_1ms(1);
+        count++;
+        if(BqIsAlert())
+        {
+            break;
+        }
+        else
+        {
+            if(count >= 1000)
+            {
+                //MCU is powered but in 1s ALERT is not set....error
+                break;
+            }
+        }
+    }
+    //dummy write command to BQ
+	I2CWriteRegisterByteWithCRC(BQMAXIMO, SYS_STAT, 0xff); 
+
+    //set CC_CFG to recommended value of 0x19
+	I2CWriteRegisterByteWithCRC(BQMAXIMO, CC_CFG, 0x19); // set this first before everything else?
 
 	Registers.Protect1.Protect1Bit.SCD_DELAY = SCDDelay;
 	Registers.Protect1.Protect1Bit.SCD_THRESH = SCDThresh;
@@ -628,7 +669,8 @@ int InitialisebqMaximo()
 	Registers.Protect2.Protect2Bit.OCD_THRESH = OCDThresh;
 	Registers.Protect3.Protect3Bit.OV_DELAY = OVDelay;
 	Registers.Protect3.Protect3Bit.UV_DELAY = UVDelay;
-
+	
+	// OV and UV threshold
 	result = GetADCGainOffset();
 
 	Gain = (365 + ((Registers.ADCGain1.ADCGain1Byte & 0x0C) << 1) + ((Registers.ADCGain2.ADCGain2Byte & 0xE0)>> 5)) / 1000.0;
@@ -637,7 +679,37 @@ int InitialisebqMaximo()
     Registers.OVTrip = (unsigned char)((((unsigned short)((OVPThreshold - Registers.ADCOffset)/Gain + 0.5) - OV_THRESH_BASE) >> 4) & 0xFF);
     Registers.UVTrip = (unsigned char)((((unsigned short)((UVPThreshold - Registers.ADCOffset)/Gain + 0.5) - UV_THRESH_BASE) >> 4) & 0xFF);
 
-    result = ConfigureBqMaximo();
+    //setup system controls
+	// ADC -> Cell Voltage
+    Registers.SysCtrl1.SysCtrl1Bit.ADC_EN = 1;
+    Registers.SysCtrl1.SysCtrl1Bit.LOAD_PRESENT = 0;                 // read-only bit
+    Registers.SysCtrl1.SysCtrl1Bit.SHUT_A = 0;                       // do not go to SHIP mode
+    Registers.SysCtrl1.SysCtrl1Bit.SHUT_B = 0;                       // do not go to SHIP mode
+    Registers.SysCtrl1.SysCtrl1Bit.TEMP_SEL = 1;                     // 0 = die temp; 1 = thermistor temp
+	
+	// Coulomb Counter -> Current Sense 
+    Registers.SysCtrl2.SysCtrl2Bit.CC_EN = 1;           // 0 = disable continuous reading; 1= enable
+    Registers.SysCtrl2.SysCtrl2Bit.CC_ONESHOT = 0;      // 0 = no action; 1 = trigger one shot reading
+    Registers.SysCtrl2.SysCtrl2Bit.DELAY_DIS = 0;       // 0 = normal delay; 1 = no delay (250ms)
+    Registers.SysCtrl2.SysCtrl2Bit.CHG_ON = 1;          // 0 = CHG FET off; 1 = CHG FET on
+    Registers.SysCtrl2.SysCtrl2Bit.DSG_ON = 1;          // 0 = DSG FET off; 1 = DSG FET on
+    Registers.SysCtrl2.SysCtrl2Bit.WAKE_EN = 0;         // Not present in BQ76930
+    Registers.SysCtrl2.SysCtrl2Bit.WAKE_T = 0;          // Not present in BQ76930
+
+	// intentionally disable cell balancing 
+	Registers.CellBal1.CellBal1Bit.CB1 = 0;
+	Registers.CellBal1.CellBal1Bit.CB2 = 0;
+	Registers.CellBal1.CellBal1Bit.CB3 = 0;
+	Registers.CellBal1.CellBal1Bit.CB4 = 0;
+	Registers.CellBal1.CellBal1Bit.CB5 = 0;
+
+	Registers.CellBal2.CellBal2Bit.CB6 = 0;
+	Registers.CellBal2.CellBal2Bit.CB7 = 0;
+	Registers.CellBal2.CellBal2Bit.CB8 = 0;
+	Registers.CellBal2.CellBal2Bit.CB9 = 0;
+    Registers.CellBal2.CellBal2Bit.CB10 = 0;
+
+	result = ConfigureBqMaximo();
 
     return result;
 }
@@ -655,7 +727,7 @@ int UpdateVoltageFromBqMaximo()
 			18); // 9 cells x 2 bytes = 18 bytes 
 
 	pRawADCData = &Registers.VCell1.VCell1Byte.VC1_HI;
-	for (i = 0; i < 15; i++)
+	for (i = 0; i < 9; i++) // 9 cells
 	{
 		iTemp = (unsigned int)(*pRawADCData << 8) + *(pRawADCData + 1);
 		lTemp = ((unsigned long)iTemp * iGain)/1000;
@@ -667,7 +739,7 @@ int UpdateVoltageFromBqMaximo()
 	return Result;
 }
 
-int main(void)
+void main(void)
 {
 	int Result;
 
@@ -684,7 +756,8 @@ int main(void)
     while(1)
     {
     	Result = UpdateVoltageFromBqMaximo();
+		Result = I2CReadBlockWithCRC(BQMAXIMO,SYS_STAT,&(Registers.SysStatus.StatusByte),1);
     }
 
-	return Result;
+	return;
 }
